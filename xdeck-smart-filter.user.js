@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X Pro Deck 智能屏蔽
 // @namespace    https://github.com/bestony/userscripts
-// @version      0.4.0
+// @version      0.5.0
 // @description  X Pro Deck（pro.x.com）：关键词规则优先，未命中再调用 TypeSafe JEV 模型智能判别，屏蔽赌博/博彩等引流推广内容；支持选中文字右键加词与配置导入导出
 // @author       bestony
 // @match        https://pro.x.com/i/decks/*
@@ -745,7 +745,38 @@
     clear.addEventListener('click', clearKeywordCache);
     foot.append(reset, clear);
 
-    panel.append(head, keyRow, row, chipsEl, chipsToggle, configWrap, foot);
+    const info = document.createElement('div');
+    info.className = 'xdeck-filter-info';
+
+    const versionLine = document.createElement('div');
+    versionLine.textContent = '版本 v' + SCRIPT_VERSION;
+
+    const repoLine = document.createElement('div');
+    const repoLabel = document.createElement('span');
+    repoLabel.textContent = '仓库：';
+    const repoLink = document.createElement('a');
+    repoLink.href = REPO_URL;
+    repoLink.target = '_blank';
+    repoLink.rel = 'noopener';
+    repoLink.textContent = 'bestony/bestony-userscripts';
+    repoLine.append(repoLabel, repoLink);
+
+    const checkLine = document.createElement('div');
+    const checkLink = document.createElement('a');
+    checkLink.href = 'javascript:void(0)';
+    checkLink.textContent = '检查更新';
+    checkLink.addEventListener('click', () => {
+      checkLink.textContent = '检查中…';
+      checkUpdate(true, (updated) => {
+        checkLink.textContent = updated ? '已是最新' : '检查更新';
+        if (updated) setTimeout(() => (checkLink.textContent = '检查更新'), 2000);
+      });
+    });
+    checkLine.append(checkLink);
+
+    info.append(versionLine, repoLine, checkLine);
+
+    panel.append(head, keyRow, row, chipsEl, chipsToggle, configWrap, foot, info);
     document.body.append(panel);
     renderChips();
   }
@@ -871,6 +902,7 @@
 
   const SCRIPT_VERSION =
     (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '0.4.0';
+  const REPO_URL = 'https://github.com/bestony/bestony-userscripts';
   const UPDATE_URL = 'https://raw.githubusercontent.com/bestony/bestony-userscripts/main/xdeck-smart-filter.user.js';
   const UPDATE_CHECK_KEY = 'xdeck-filter-update-check';
   const UPDATE_CHECK_INTERVAL = 12 * 3600 * 1000;
@@ -917,12 +949,15 @@
     document.body.append(bar);
   }
 
-  function checkUpdate(force) {
-    if (typeof GM_xmlhttpRequest !== 'function') return;
+  function checkUpdate(force, done) {
+    const finish = (updated) => {
+      if (typeof done === 'function') done(!!updated);
+    };
+    if (typeof GM_xmlhttpRequest !== 'function') return finish(false);
     const now = Date.now();
     try {
       const last = Number(localStorage.getItem(UPDATE_CHECK_KEY)) || 0;
-      if (!force && now - last < UPDATE_CHECK_INTERVAL) return;
+      if (!force && now - last < UPDATE_CHECK_INTERVAL) return finish(false);
     } catch (e) {
       /* ignore */
     }
@@ -932,9 +967,9 @@
       url: UPDATE_URL + '?t=' + now,
       timeout: 20000,
       onload: (res) => {
-        if (res.status !== 200) return;
+        if (res.status !== 200) return finish(false);
         const m = VERSION_RE.exec(res.responseText);
-        if (!m) return;
+        if (!m) return finish(false);
         try {
           localStorage.setItem(UPDATE_CHECK_KEY, String(now));
         } catch (e) {
@@ -943,10 +978,18 @@
         if (isNewer(m[1], SCRIPT_VERSION)) {
           log('update available:', SCRIPT_VERSION, '->', m[1]);
           showUpdateNotice(m[1]);
+          return finish(true);
         }
+        finish(false);
       },
-      onerror: () => log('update check failed'),
-      ontimeout: () => log('update check failed'),
+      onerror: () => {
+        log('update check failed');
+        finish(false);
+      },
+      ontimeout: () => {
+        log('update check failed');
+        finish(false);
+      },
     });
   }
 
@@ -1024,6 +1067,13 @@
     }
     .xdeck-filter-config .xdeck-filter-panel-row button { flex: 1; background: #253341; color: #e7e9ea; }
     .xdeck-filter-panel-foot { display: flex; gap: 8px; }
+    .xdeck-filter-info {
+      display: flex; flex-direction: column; gap: 3px;
+      padding-top: 8px; border-top: 1px solid #38444d;
+      color: #8b98a5; font-size: 11px; line-height: 1.5;
+    }
+    .xdeck-filter-info a { color: #1d9bf0 !important; text-decoration: none; }
+    .xdeck-filter-info a:hover { text-decoration: underline; }
     .xdeck-filter-menu {
       position: fixed; z-index: 100000; display: none; min-width: 140px;
       padding: 4px; border-radius: 8px; background: #15202b;
