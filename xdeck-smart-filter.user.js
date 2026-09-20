@@ -469,13 +469,9 @@
     rescanAll();
   }
 
-  // 导出配置：仅包含关键词，不包含 API Key
+  // 导出配置：仅包含关键词，不包含 API Key（最小化 JSON，无空格换行）
   function exportConfig() {
-    return JSON.stringify(
-      { type: 'xdeck-filter-keywords', version: 1, keywords: keywords.slice() },
-      null,
-      2,
-    );
+    return JSON.stringify({ type: 'xdeck-filter-keywords', version: 1, keywords: keywords.slice() });
   }
 
   // 解析导入的配置：支持 { keywords: [...] } 或直接的字符串数组
