@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         X Pro Deck 智能屏蔽
 // @namespace    https://github.com/bestony/userscripts
-// @version      0.5.0
-// @description  X Pro Deck（pro.x.com）：关键词规则优先，未命中再调用 TypeSafe JEV 模型智能判别，屏蔽赌博/博彩等引流推广内容；支持选中文字右键加词与配置导入导出
+// @version      0.6.0
+// @description  X Pro Deck（pro.x.com）：按用户 handle 封禁优先，其次关键词规则，最后调用 TypeSafe JEV 模型智能判别，屏蔽赌博/博彩等引流推广内容；支持手动封禁用户、右键加词与配置导入导出
 // @author       bestony
 // @match        https://pro.x.com/i/decks/*
 // @grant        GM_xmlhttpRequest
@@ -31,6 +31,9 @@
     '太阳城',
   ];
 
+  // 默认封禁的 handle（不带 @，不区分大小写）。JEV 判定为屏蔽时会自动追加到这里
+  const DEFAULT_BLOCKED_HANDLES = [];
+
   const BLOCK_THRESHOLD = 0.5; // JEV 概率 ≥ 该值即判定为需要屏蔽
   const MAX_CONCURRENT = 2; // 同时进行的智能判别请求数
   const MAX_RETRY = 3; // 429 / 529 / 网络错误重试次数
@@ -38,6 +41,7 @@
 
   const ENABLE_KEY = 'xdeck-filter-enabled';
   const KEYWORDS_KEY = 'xdeck-filter-keywords';
+  const HANDLES_KEY = 'xdeck-filter-handles';
   const API_KEY_KEY = 'xdeck-filter-apikey';
   const CACHE_KEY = 'xdeck-filter-cache-v1';
   const LOG = '[xdeck-filter]';
@@ -89,6 +93,81 @@
 
   function matchKeyword(text) {
     return keywords.find((k) => k && text.indexOf(k) !== -1) || '';
+  }
+
+  /* ==================== 用户封禁配置 ==================== */
+
+  // 统一 handle 形式：去掉 @ 前缀、转小写
+  function normalizeHandle(h) {
+    return String(h || '').trim().replace(/^@+/, '').toLowerCase();
+  }
+
+  function uniqueHandles(list) {
+    const seen = new Set();
+    const out = [];
+    (list || []).forEach((h) => {
+      const v = normalizeHandle(h);
+      if (!v || seen.has(v)) return;
+      seen.add(v);
+      out.push(v);
+    });
+    return out;
+  }
+
+  function loadHandles() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(HANDLES_KEY));
+      if (Array.isArray(raw)) return uniqueHandles(raw);
+    } catch (e) {
+      /* ignore */
+    }
+    return DEFAULT_BLOCKED_HANDLES.slice();
+  }
+
+  let blockedHandles = loadHandles();
+  let blockedHandleSet = new Set(blockedHandles);
+
+  function saveHandles() {
+    try {
+      localStorage.setItem(HANDLES_KEY, JSON.stringify(blockedHandles));
+    } catch (e) {
+      log('save handles failed', e);
+    }
+  }
+
+  // 手动/自动把 handle 加入封禁列表；返回是否有新增
+  function addBlockedHandle(handle, opts) {
+    const v = normalizeHandle(handle);
+    if (!v || blockedHandleSet.has(v)) return false;
+    blockedHandles.push(v);
+    blockedHandleSet.add(v);
+    saveHandles();
+    renderHandleChips();
+    if (!(opts && opts.silent)) rescanAll();
+    return true;
+  }
+
+  function removeBlockedHandle(handle) {
+    const v = normalizeHandle(handle);
+    if (!blockedHandleSet.has(v)) return false;
+    blockedHandleSet.delete(v);
+    blockedHandles = blockedHandles.filter((h) => h !== v);
+    saveHandles();
+    renderHandleChips();
+    rescanAll();
+    return true;
+  }
+
+  function setBlockedHandles(list) {
+    blockedHandles = uniqueHandles(list);
+    blockedHandleSet = new Set(blockedHandles);
+    saveHandles();
+    renderHandleChips();
+    rescanAll();
+  }
+
+  function matchHandle(handle) {
+    return handle && blockedHandleSet.has(handle) ? handle : '';
   }
 
   /* ==================== 智能判别（JEV） ==================== */
@@ -226,6 +305,22 @@
     return name ? name.textContent : '';
   }
 
+  // 提取作者 handle（小写，不带 @），用于用户封禁匹配
+  function tweetHandle(article) {
+    const links = article.querySelectorAll('[data-testid="User-Name"] a[href^="/"]');
+    for (const a of links) {
+      const href = (a.getAttribute('href') || '').split(/[?#]/)[0].replace(/\/+$/, '');
+      const m = /^\/([A-Za-z0-9_]+)$/.exec(href);
+      if (m) return m[1].toLowerCase();
+    }
+    const name = article.querySelector('[data-testid="User-Name"]');
+    if (name) {
+      const m = /@([A-Za-z0-9_]{1,15})/.exec(name.textContent || '');
+      if (m) return m[1].toLowerCase();
+    }
+    return '';
+  }
+
   function apply(container, blocked, key) {
     container.dataset.sfKey = key;
     container.dataset.sfState = blocked ? 'blocked' : 'allowed';
@@ -252,6 +347,7 @@
     document.querySelectorAll('article[data-testid="tweet"]').forEach((article) => {
       const text = normalize(tweetText(article));
       const author = normalize(tweetAuthor(article));
+      const handle = tweetHandle(article);
       if (!text && !author) return;
 
       const container = article.closest('[data-testid="cellInnerDiv"]') || article;
@@ -266,7 +362,14 @@
 
       if (container.dataset.sfState === 'blocked' || container.dataset.sfState === 'allowed') return;
 
-      // 1) 关键词规则优先（正文或用户名命中即屏蔽）
+      // 1) 用户封禁优先：命中封禁列表直接隐藏（在关键词与 JEV 之前）
+      if (matchHandle(handle)) {
+        log('handle blocked:', '@' + handle, text.slice(0, 40));
+        apply(container, true, key);
+        return;
+      }
+
+      // 2) 关键词规则（正文或用户名命中即屏蔽）
       const matched = matchContent(text, author);
       if (matched) {
         log('keyword hit:', matched.hit, matched.where, (text || author).slice(0, 40));
@@ -274,13 +377,13 @@
         return;
       }
 
-      // 2) 命中缓存（无正文时不缓存，避免污染）
+      // 3) 命中缓存（无正文时不缓存，避免污染）
       if (text && cache[key]) {
         apply(container, !!cache[key].b, key);
         return;
       }
 
-      // 3) 无 API Key 时只跑关键词
+      // 4) 无 API Key 时只跑关键词
       if (!apiKey || !text) return;
 
       if (inFlight.has(key)) return;
@@ -292,6 +395,13 @@
           const blocked = p >= BLOCK_THRESHOLD;
           cache[key] = { b: blocked, t: Date.now() };
           saveCache();
+          // JEV 判定为屏蔽时，把作者 handle 收入封禁列表（后续同作者内容直接隐藏）
+          if (blocked && handle) {
+            if (addBlockedHandle(handle, { silent: true })) {
+              log('jev auto-blocked user:', '@' + handle);
+              scheduleRescan();
+            }
+          }
           log('jev:', p.toFixed(3), blocked ? 'blocked' : 'keep', text.slice(0, 40));
           apply(container, blocked, key);
         }).catch((e) => {
@@ -317,11 +427,26 @@
     articles.forEach((article) => {
       const text = normalize(tweetText(article));
       const author = normalize(tweetAuthor(article));
+      const handle = tweetHandle(article);
       if (!text && !author) return;
 
       const container = article.closest('[data-testid="cellInnerDiv"]') || article;
       // 只做屏蔽，未命中不标记 allowed，交给 scan 走缓存/智能判别
       if (container.dataset.sfState === 'blocked') return;
+
+      // 用户封禁优先于关键词
+      if (matchHandle(handle)) {
+        container.classList.add('xdeck-filter-blocked');
+        log('pre-hide handle:', '@' + handle, text.slice(0, 40));
+        const hkey = hash(text + '\u0000' + author);
+        if (container.dataset.sfState !== 'blocked') {
+          container.dataset.sfKey = hkey;
+          container.dataset.sfState = 'blocked';
+          blockedCount++;
+          refreshBadge();
+        }
+        return;
+      }
 
       const matched = matchContent(text, author);
       if (!matched) return;
@@ -337,6 +462,13 @@
         refreshBadge();
       }
     });
+  }
+
+  // 防抖重扫：JEV 自动加入封禁用户后，让同一作者的其他卡片也立即隐藏
+  let rescanTimer = 0;
+  function scheduleRescan() {
+    clearTimeout(rescanTimer);
+    rescanTimer = setTimeout(rescanAll, 300);
   }
 
   // 重置所有卡片的判定状态，然后重新扫描（关键词或缓存变更后调用）
@@ -357,6 +489,7 @@
   let badge;
   let panel;
   let chipsEl;
+  let handleChipsEl;
   let chipsToggle;
   let configWrapEl;
   let contextMenu;
@@ -422,6 +555,46 @@
     updateChipsToggle();
   }
 
+  function renderHandleChips() {
+    if (!handleChipsEl) return;
+    handleChipsEl.textContent = '';
+
+    if (!blockedHandles.length) {
+      const empty = document.createElement('span');
+      empty.className = 'xdeck-filter-empty';
+      empty.textContent = '暂无封禁用户';
+      handleChipsEl.append(empty);
+      return;
+    }
+
+    blockedHandles.forEach((handle) => {
+      const chip = document.createElement('span');
+      chip.className = 'xdeck-filter-chip';
+
+      const label = document.createElement('span');
+      label.textContent = '@' + handle;
+
+      const del = document.createElement('a');
+      del.className = 'xdeck-filter-chip-del';
+      del.href = 'javascript:void(0)';
+      del.title = '解除封禁';
+      del.textContent = '×';
+      del.addEventListener('click', () => removeBlockedHandle(handle));
+
+      chip.append(label, del);
+      handleChipsEl.append(chip);
+    });
+  }
+
+  // 支持一次添加多个 handle，自动去重
+  function addHandles(raw) {
+    let added = false;
+    splitKeywords(raw).forEach((h) => {
+      if (addBlockedHandle(h, { silent: true })) added = true;
+    });
+    if (added) rescanAll();
+  }
+
   // 拆分输入：用空格、英文/中文逗号或换行分隔
   function splitKeywords(raw) {
     return String(raw || '')
@@ -469,12 +642,17 @@
     rescanAll();
   }
 
-  // 导出配置：仅包含关键词，不包含 API Key（最小化 JSON，无空格换行）
+  // 导出配置：包含关键词与封禁用户，不包含 API Key（最小化 JSON，无空格换行）
   function exportConfig() {
-    return JSON.stringify({ type: 'xdeck-filter-keywords', version: 1, keywords: keywords.slice() });
+    return JSON.stringify({
+      type: 'xdeck-filter-keywords',
+      version: 1,
+      keywords: keywords.slice(),
+      handles: blockedHandles.slice(),
+    });
   }
 
-  // 解析导入的配置：支持 { keywords: [...] } 或直接的字符串数组
+  // 解析导入的配置：支持 { keywords: [...], handles: [...] } 或直接的字符串数组
   function parseConfig(raw) {
     let data;
     try {
@@ -484,13 +662,25 @@
     }
     const list = Array.isArray(data) ? data : data && Array.isArray(data.keywords) ? data.keywords : null;
     if (!list) throw new Error('未找到关键词列表');
-    return uniqueKeywords(list.map((k) => String(k).trim()).filter(Boolean));
+    const handles = !Array.isArray(data) && data && Array.isArray(data.handles) ? data.handles : null;
+    return {
+      keywords: uniqueKeywords(list.map((k) => String(k).trim()).filter(Boolean)),
+      handles: handles ? uniqueHandles(handles) : null,
+    };
   }
 
   function importConfig(raw) {
-    keywords = parseConfig(raw);
+    const parsed = parseConfig(raw);
+    keywords = parsed.keywords;
     saveKeywords();
+    // 旧版配置没有 handles 字段时保留现有封禁列表
+    if (parsed.handles) {
+      blockedHandles = parsed.handles;
+      blockedHandleSet = new Set(blockedHandles);
+      saveHandles();
+    }
     renderChips();
+    renderHandleChips();
     rescanAll();
   }
 
@@ -621,14 +811,47 @@
     chipsToggle.textContent = '查看完整清单';
     chipsToggle.addEventListener('click', () => setChipsExpanded(!chipsExpanded));
 
-    // 导入 / 导出关键词（不含 API Key）
+    // 封禁用户（handle）：命中的内容在关键词与 JEV 之前直接隐藏
+    const handleBlock = document.createElement('div');
+    handleBlock.className = 'xdeck-filter-key';
+    const handleLabel = document.createElement('div');
+    handleLabel.className = 'xdeck-filter-key-label';
+    handleLabel.textContent = '封禁用户（@handle）';
+
+    const handleRow = document.createElement('div');
+    handleRow.className = 'xdeck-filter-panel-row';
+    const handleInput = document.createElement('textarea');
+    handleInput.className = 'xdeck-filter-input';
+    handleInput.rows = 2;
+    handleInput.placeholder = '多个 @handle 用空格、逗号或换行分隔';
+    const handleAdd = document.createElement('button');
+    handleAdd.className = 'xdeck-filter-add';
+    handleAdd.type = 'button';
+    handleAdd.textContent = '封禁';
+    const submitHandles = () => {
+      addHandles(handleInput.value);
+      handleInput.value = '';
+      handleInput.focus();
+    };
+    handleAdd.addEventListener('click', submitHandles);
+    handleInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) submitHandles();
+    });
+    handleRow.append(handleInput, handleAdd);
+
+    handleChipsEl = document.createElement('div');
+    handleChipsEl.className = 'xdeck-filter-chips xdeck-filter-chips-collapsed';
+
+    handleBlock.append(handleLabel, handleRow, handleChipsEl);
+
+    // 导入 / 导出关键词与封禁用户（不含 API Key）
     const configWrap = document.createElement('div');
     configWrap.className = 'xdeck-filter-config';
 
     const configLabel = document.createElement('div');
     configLabel.className = 'xdeck-filter-key-label';
     const configHint = document.createElement('span');
-    configHint.textContent = '导入导出（仅关键词，不含 API Key）';
+    configHint.textContent = '导入导出（关键词 + 封禁用户，不含 API Key）';
 
     const configToggle = document.createElement('a');
     configToggle.className = 'xdeck-filter-config-toggle';
@@ -730,7 +953,11 @@
     reset.addEventListener('click', () => {
       keywords = DEFAULT_KEYWORDS.slice();
       saveKeywords();
+      blockedHandles = DEFAULT_BLOCKED_HANDLES.slice();
+      blockedHandleSet = new Set(blockedHandles);
+      saveHandles();
       renderChips();
+      renderHandleChips();
       rescanAll();
     });
     const clear = document.createElement('button');
@@ -772,9 +999,10 @@
 
     info.append(versionLine, repoLine, checkLine);
 
-    panel.append(head, keyRow, row, chipsEl, chipsToggle, configWrap, foot, info);
+    panel.append(head, keyRow, row, chipsEl, chipsToggle, handleBlock, configWrap, foot, info);
     document.body.append(panel);
     renderChips();
+    renderHandleChips();
   }
 
   /* ==================== 选中文字右键菜单 ==================== */
@@ -793,22 +1021,42 @@
     if (contextMenu) contextMenu.classList.remove('xdeck-filter-menu-open');
   }
 
-  function showContextMenu(x, y, text) {
+  function showContextMenu(x, y, text, handle) {
     if (!contextMenu) return;
 
-    const label = text.length > 24 ? text.slice(0, 24) + '…' : text;
     contextMenu.textContent = '';
 
-    const add = document.createElement('a');
-    add.className = 'xdeck-filter-menu-item';
-    add.href = 'javascript:void(0)';
-    add.textContent = '加入屏蔽词：' + label;
-    add.addEventListener('click', () => {
-      addKeywords(text);
-      hideContextMenu();
-    });
+    // 屏蔽用户优先，可直接封禁当前卡片作者
+    if (handle && !blockedHandleSet.has(handle)) {
+      const blockUser = document.createElement('a');
+      blockUser.className = 'xdeck-filter-menu-item';
+      blockUser.href = 'javascript:void(0)';
+      blockUser.textContent = '屏蔽用户：@' + handle;
+      blockUser.addEventListener('click', () => {
+        addBlockedHandle(handle);
+        hideContextMenu();
+      });
+      contextMenu.append(blockUser);
+    }
 
-    contextMenu.append(add);
+    if (text) {
+      const label = text.length > 24 ? text.slice(0, 24) + '…' : text;
+      const add = document.createElement('a');
+      add.className = 'xdeck-filter-menu-item';
+      add.href = 'javascript:void(0)';
+      add.textContent = '加入屏蔽词：' + label;
+      add.addEventListener('click', () => {
+        addKeywords(text);
+        hideContextMenu();
+      });
+      contextMenu.append(add);
+    }
+
+    if (!contextMenu.childElementCount) {
+      hideContextMenu();
+      return;
+    }
+
     contextMenu.classList.add('xdeck-filter-menu-open');
 
     // 定位到鼠标位置，并避免超出视口
@@ -828,12 +1076,14 @@
 
     document.addEventListener('contextmenu', (e) => {
       const text = getSelectionText();
-      if (!text) {
+      const article = e.target && e.target.closest ? e.target.closest('article[data-testid="tweet"]') : null;
+      const handle = article ? tweetHandle(article) : '';
+      if (!text && !handle) {
         hideContextMenu();
         return;
       }
       e.preventDefault();
-      showContextMenu(e.clientX, e.clientY, text);
+      showContextMenu(e.clientX, e.clientY, text, handle);
     });
 
     document.addEventListener('mousedown', (e) => {
@@ -897,7 +1147,7 @@
   /* ==================== 自动检查更新 ==================== */
 
   const SCRIPT_VERSION =
-    (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '0.4.0';
+    (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '0.6.0';
   const REPO_URL = 'https://github.com/bestony/bestony-userscripts';
   const UPDATE_URL = 'https://raw.githubusercontent.com/bestony/bestony-userscripts/main/xdeck-smart-filter.user.js';
   const UPDATE_CHECK_KEY = 'xdeck-filter-update-check';
@@ -1143,6 +1393,10 @@
       renderChips();
       rescanAll();
     },
+    getHandles: () => blockedHandles.slice(),
+    setHandles: setBlockedHandles,
+    blockHandle: (handle) => addBlockedHandle(handle),
+    unblockHandle: (handle) => removeBlockedHandle(handle),
     setApiKey: (key) => {
       apiKey = String(key || '').trim();
       saveApiKey();

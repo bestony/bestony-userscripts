@@ -28,9 +28,18 @@ Notes:
 
 For [X Pro](https://pro.x.com/) decks (`pro.x.com/i/decks/*`).
 
-Filters timeline cards in a deck. Each card is first checked against a plain keyword list
-(seeded by `DEFAULT_KEYWORDS`), and only if nothing matches is it sent to the [TypeSafe](https://docs.typesafe.ai/api)
-`/v1/systemone` endpoint with the JEV model for a yes/no judgement. Matches are hidden.
+Filters timeline cards in a deck. Each card is checked in this order:
+
+1. **Blocked users** — if the author's `@handle` is in the block list, the card is hidden
+   before any keyword or model work.
+2. **Keywords** — the card's text (and author line) is matched against a plain keyword list
+   (seeded by `DEFAULT_KEYWORDS`).
+3. **JEV** — only if nothing above matches, the text is sent to the [TypeSafe](https://docs.typesafe.ai/api)
+   `/v1/systemone` endpoint with the JEV model for a yes/no judgement. When JEV decides to block,
+   the author's handle is automatically added to the block list so later posts are hidden immediately.
+
+Matches are hidden. Handles can also be blocked manually from the settings panel or by
+right-clicking a card. Config export/import includes both keywords and blocked handles.
 
 ## Install
 
