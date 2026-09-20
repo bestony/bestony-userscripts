@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         X Pro Deck 智能屏蔽
 // @namespace    https://github.com/bestony/bestony-userscripts
-// @version      0.6.2
+// @version      0.6.4
 // @description  X Pro Deck（pro.x.com）：按用户 handle 封禁优先，其次关键词规则，最后调用 TypeSafe JEV 模型智能判别，屏蔽赌博/博彩等引流推广内容；支持手动封禁用户、右键加词与配置导入导出
 // @author       bestony
-// @match        https://pro.x.com/i/decks/*
+// @match        https://pro.x.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_info
 // @connect      api.typesafe.ai
@@ -293,6 +293,12 @@
   let blockedCount = 0;
   const inFlight = new Set();
 
+  // 仅在有 deck 的路由上生效。X Pro 是 SPA，@match 放宽到 pro.x.com/* 后
+  // 由这里决定当前页面是否需要过滤，避免在首页/设置等非 deck 页面误屏蔽
+  function isDeckRoute() {
+    return /^\/i\/decks(\/|$)/.test(location.pathname);
+  }
+
   function tweetText(article) {
     return [...article.querySelectorAll('[data-testid="tweetText"]')]
       .map((el) => el.textContent)
@@ -350,14 +356,17 @@
     el.style.removeProperty('display');
   }
 
-  function apply(container, blocked, key) {
+  function apply(container, blocked, key, reason) {
     container.dataset.sfKey = key;
     container.dataset.sfState = blocked ? 'blocked' : 'allowed';
     if (blocked) {
+      // 记录命中原因，供右侧徽标在打开该条 Post 时展示，方便 debug
+      container.dataset.sfReason = reason || '';
       markBlocked(container);
       blockedCount++;
       refreshBadge();
     } else {
+      container.dataset.sfReason = '';
       unmarkBlocked(container);
     }
   }
@@ -372,8 +381,13 @@
     return null;
   }
 
+  // 命中原因文案，用于徽标展示「已屏蔽」的具体规则
+  function keywordReason(matched) {
+    return (matched.where === 'author' ? '用户名' : '关键词') + '「' + matched.hit + '」';
+  }
+
   function scan() {
-    if (!enabled) return;
+    if (!enabled || !isDeckRoute()) return;
 
     document.querySelectorAll('article[data-testid="tweet"]').forEach((article) => {
       const text = normalize(tweetText(article));
@@ -401,7 +415,7 @@
       // 1) 用户封禁优先：命中封禁列表直接隐藏（在关键词与 JEV 之前）
       if (matchHandle(handle)) {
         log('handle blocked:', '@' + handle, text.slice(0, 40));
-        apply(container, true, key);
+        apply(container, true, key, '用户 @' + handle);
         return;
       }
 
@@ -409,13 +423,13 @@
       const matched = matchContent(text, author);
       if (matched) {
         log('keyword hit:', matched.hit, matched.where, (text || author).slice(0, 40));
-        apply(container, true, key);
+        apply(container, true, key, keywordReason(matched));
         return;
       }
 
       // 3) 命中缓存（无正文时不缓存，避免污染）
       if (text && cache[key]) {
-        apply(container, !!cache[key].b, key);
+        apply(container, !!cache[key].b, key, cache[key].b ? 'JEV 智能判别' : '');
         return;
       }
 
@@ -439,7 +453,7 @@
             }
           }
           log('jev:', p.toFixed(3), blocked ? 'blocked' : 'keep', text.slice(0, 40));
-          apply(container, blocked, key);
+          apply(container, blocked, key, blocked ? 'JEV 智能判别' : '');
         }).catch((e) => {
           log('jev failed:', e.message, text.slice(0, 40));
           container.dataset.sfState = '';
@@ -448,6 +462,9 @@
         }),
       );
     });
+
+    // 扫描后刷新徽标，保证「当前打开的 Post」命中原因能及时更新
+    refreshBadge();
   }
 
   // 新节点插入时同步做一次关键词预屏蔽：
@@ -481,6 +498,7 @@
         if (container.dataset.sfState !== 'blocked') {
           container.dataset.sfKey = hkey;
           container.dataset.sfState = 'blocked';
+          container.dataset.sfReason = '用户 @' + handle;
           blockedCount++;
           refreshBadge();
         }
@@ -497,6 +515,7 @@
       if (container.dataset.sfState !== 'blocked') {
         container.dataset.sfKey = key;
         container.dataset.sfState = 'blocked';
+        container.dataset.sfReason = keywordReason(matched);
         blockedCount++;
         refreshBadge();
       }
@@ -516,6 +535,7 @@
       unmarkBlocked(el);
       el.dataset.sfKey = '';
       el.dataset.sfState = '';
+      el.dataset.sfReason = '';
     });
     blockedCount = 0;
     refreshBadge();
@@ -526,6 +546,7 @@
   /* ======================= UI ======================= */
 
   let badge;
+  let reasonEl;
   let panel;
   let chipsEl;
   let handleChipsEl;
@@ -534,12 +555,52 @@
   let contextMenu;
   let confirmEl;
   let chipsExpanded = false;
+  let lastClickedArticle = null;
 
   function refreshBadge() {
     if (!badge) return;
     badge.querySelector('.xdeck-filter-count').textContent = String(blockedCount);
     badge.querySelector('.xdeck-filter-toggle').textContent = enabled ? '关闭' : '开启';
     badge.classList.toggle('xdeck-filter-off', !enabled);
+    if (reasonEl) {
+      const reason = enabled ? openBlockReason() : '';
+      reasonEl.textContent = reason ? ' · ' + reason : '';
+    }
+  }
+
+  // 找出「当前打开/选中」的那条 Post：
+  // 1) 详情弹窗里的推文；2) 与当前 /status/<id> 对应的推文；3) 用户最近点击过的推文
+  function openArticle() {
+    const modal = document.querySelector(
+      '[data-testid="modal"] article[data-testid="tweet"], [aria-labelledby="modal-header"] article[data-testid="tweet"], [role="dialog"] article[data-testid="tweet"]',
+    );
+    if (modal) return modal;
+
+    const m = /\/status\/(\d+)/.exec(location.pathname + location.search);
+    if (m) {
+      const link = document.querySelector(`a[href*="/status/${m[1]}"]`);
+      const article = link && link.closest ? link.closest('article[data-testid="tweet"]') : null;
+      if (article) return article;
+    }
+
+    if (lastClickedArticle && lastClickedArticle.isConnected) return lastClickedArticle;
+    return null;
+  }
+
+  // 当前打开的 Post 若已被屏蔽，返回其命中原因（无则返回空串）
+  function openBlockReason() {
+    const article = openArticle();
+    if (!article) return '';
+    const container = article.closest('[data-testid="cellInnerDiv"]') || article;
+    if (container.dataset.sfState !== 'blocked') return '';
+    return container.dataset.sfReason || '已屏蔽';
+  }
+
+  function rememberClickedArticle(e) {
+    const article = e.target && e.target.closest ? e.target.closest('article[data-testid="tweet"]') : null;
+    if (!article) return;
+    lastClickedArticle = article;
+    refreshBadge();
   }
 
   // 默认只展示一行关键词，内容放不下时才显示「查看完整清单」开关
@@ -1180,6 +1241,9 @@
     contextMenu.className = 'xdeck-filter-menu';
     document.body.append(contextMenu);
 
+    // 记录用户最近点击的 Post，供徽标展示「已屏蔽」的命中规则
+    document.addEventListener('click', rememberClickedArticle, true);
+
     document.addEventListener('contextmenu', (e) => {
       const text = getSelectionText();
       const article = e.target && e.target.closest ? e.target.closest('article[data-testid="tweet"]') : null;
@@ -1296,7 +1360,10 @@
     count.textContent = '0';
 
     const label = document.createElement('span');
-    label.textContent = ' 条已屏蔽 · ';
+    label.textContent = ' 条已屏蔽';
+
+    reasonEl = document.createElement('span');
+    reasonEl.className = 'xdeck-filter-reason';
 
     const toggle = document.createElement('a');
     toggle.className = 'xdeck-filter-toggle';
@@ -1308,6 +1375,7 @@
         document.querySelectorAll('[data-sf-state="blocked"]').forEach((el) => {
           unmarkBlocked(el);
           el.dataset.sfState = '';
+          el.dataset.sfReason = '';
         });
         blockedCount = 0;
         refreshBadge();
@@ -1328,7 +1396,7 @@
       panel.classList.contains('xdeck-filter-open') ? closePanel() : openPanel();
     });
 
-    badge.append(count, label, toggle, sep, settings);
+    badge.append(count, label, reasonEl, toggle, sep, settings);
     document.body.append(badge);
     refreshBadge();
   }
@@ -1336,7 +1404,7 @@
   /* ==================== 自动检查更新 ==================== */
 
   const SCRIPT_VERSION =
-    (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '0.6.2';
+    (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '0.6.4';
   const REPO_URL = 'https://github.com/bestony/bestony-userscripts';
   const UPDATE_URL = 'https://raw.githubusercontent.com/bestony/bestony-userscripts/main/xdeck-smart-filter.user.js';
   const UPDATE_CHECK_KEY = 'xdeck-filter-update-check';
@@ -1442,6 +1510,8 @@
     }
     .xdeck-filter-badge.xdeck-filter-off { opacity: .45; }
     .xdeck-filter-badge a { color: #1d9bf0; text-decoration: none; }
+    .xdeck-filter-reason { color: #ffd400; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .xdeck-filter-reason:empty { display: none; }
     .xdeck-filter-panel {
       position: fixed; right: 16px; bottom: 52px; z-index: 99999;
       display: none; flex-direction: column; gap: 10px;
@@ -1561,12 +1631,44 @@
     .xdeck-filter-update a { color: #fff; font-weight: 600; text-decoration: underline; }
     .xdeck-filter-update-close { text-decoration: none !important; font-size: 16px; line-height: 1; opacity: .85; }
   `;
-  document.head.append(style);
+  // 路由变化后按当前路由决定注入 UI 还是隐藏。
+  // X Pro 是 SPA，从首页等入口点进 deck 不会重新加载文档，油猴也不会重新注入，
+  // 所以 @match 放宽到 pro.x.com/*，在这里补上注入与扫描
+  function onRouteChange() {
+    if (!document.body) return;
+    if (isDeckRoute()) {
+      injectBadge();
+      injectPanel();
+      injectContextMenu();
+      injectConfirm();
+      if (badge) badge.style.display = '';
+      scan();
+    } else {
+      if (badge) badge.style.display = 'none';
+      closePanel();
+      hideContextMenu();
+    }
+  }
+
+  // 监听 SPA 的路由变化
+  function watchRoute() {
+    const fire = () => setTimeout(onRouteChange, 0);
+    ['pushState', 'replaceState'].forEach((name) => {
+      const original = history[name];
+      history[name] = function (...args) {
+        const ret = original.apply(this, args);
+        fire();
+        return ret;
+      };
+    });
+    window.addEventListener('popstate', fire);
+    window.addEventListener('hashchange', fire);
+  }
 
   let scheduled = 0;
   const observer = new MutationObserver((mutations) => {
     // 新增节点先做一次同步的「关键词预屏蔽」，尽量在进入视口前就隐藏，避免跳变
-    if (enabled) {
+    if (enabled && isDeckRoute()) {
       for (const m of mutations) {
         for (const node of m.addedNodes) {
           if (node.nodeType !== 1) continue;
@@ -1578,24 +1680,27 @@
     if (scheduled) return;
     scheduled = setTimeout(() => {
       scheduled = 0;
-      injectBadge();
-      injectPanel();
-      injectContextMenu();
-      injectConfirm();
-      scan();
+      onRouteChange();
     }, 150);
   });
-  observer.observe(document.body, { childList: true, subtree: true });
 
-  injectBadge();
-  injectPanel();
-  injectContextMenu();
-  injectConfirm();
-  scan();
-  checkUpdate();
-  setInterval(scan, 3000); // 兜底：UI 虚拟滚动偶尔不触发 MutationObserver
+  // 等 body 就绪再启动：避免注入时 body 尚未生成导致中断且无人补救
+  function boot() {
+    if (!document.head || !document.body) {
+      setTimeout(boot, 100);
+      return;
+    }
+    document.head.append(style);
+    observer.observe(document.body, { childList: true, subtree: true });
+    watchRoute();
+    onRouteChange();
+    checkUpdate();
+    setInterval(scan, 3000); // 兜底：UI 虚拟滚动偶尔不触发 MutationObserver
 
-  if (!apiKey) log('未配置 API Key，仅启用关键词规则');
+    if (!apiKey) log('未配置 API Key，仅启用关键词规则');
+  }
+
+  boot();
 
   // 控制台自测入口：__xdeckFilter.scan() / getKeywords() / setKeywords([...]) / setApiKey('...')
   window.__xdeckFilter = {

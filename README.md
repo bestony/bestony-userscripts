@@ -26,7 +26,10 @@ Notes:
 
 ### xdeck-smart-filter.user.js — X Pro Deck 智能屏蔽
 
-For [X Pro](https://pro.x.com/) decks (`pro.x.com/i/decks/*`).
+For [X Pro](https://pro.x.com/) decks. The script matches all of `pro.x.com/*` because X Pro is
+an SPA: entering a deck via client-side navigation does not reload the document, so a narrow
+`/i/decks/*` match would skip injection until a manual refresh. It only filters on routes under
+`/i/decks`. If you self-host a modified copy, reinstall/update the script after changing `@match`.
 
 Filters timeline cards in a deck. Each card is checked in this order:
 
@@ -40,6 +43,9 @@ Filters timeline cards in a deck. Each card is checked in this order:
 
 Matches are hidden. Handles can also be blocked manually from the settings panel or by
 right-clicking a card. Config export/import includes both keywords and blocked handles.
+When a post is currently open (detail view or last clicked) and it has been blocked, the
+bottom-right badge appends the matched rule (`用户 @handle` / `关键词「…」` / `JEV 智能判别`) for
+debugging.
 
 ## Install
 
