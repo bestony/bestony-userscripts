@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X Pro Deck 智能屏蔽
 // @namespace    https://github.com/bestony/userscripts
-// @version      0.6.1
+// @version      0.6.2
 // @description  X Pro Deck（pro.x.com）：按用户 handle 封禁优先，其次关键词规则，最后调用 TypeSafe JEV 模型智能判别，屏蔽赌博/博彩等引流推广内容；支持手动封禁用户、右键加词与配置导入导出
 // @author       bestony
 // @match        https://pro.x.com/i/decks/*
@@ -333,13 +333,32 @@
     return img ? img.getAttribute('src') || '' : '';
   }
 
+  // 缓存/判定用的稳定标识：只用正文 + handle。
+  // 注意不要用 tweetAuthor，它带有「· 2m」这类相对时间，会随时间变化导致重复判定与闪动
+  function contentKey(text, handle) {
+    return hash(text + '\u0000' + (handle || ''));
+  }
+
+  // 折叠隐藏：同时用 class 与内联样式，避免 React 重渲染时清掉其中一种导致内容闪现
+  function markBlocked(el) {
+    el.classList.add('xdeck-filter-blocked');
+    el.style.setProperty('display', 'none', 'important');
+  }
+
+  function unmarkBlocked(el) {
+    el.classList.remove('xdeck-filter-blocked');
+    el.style.removeProperty('display');
+  }
+
   function apply(container, blocked, key) {
     container.dataset.sfKey = key;
     container.dataset.sfState = blocked ? 'blocked' : 'allowed';
-    container.classList.toggle('xdeck-filter-blocked', blocked);
     if (blocked) {
+      markBlocked(container);
       blockedCount++;
       refreshBadge();
+    } else {
+      unmarkBlocked(container);
     }
   }
 
@@ -363,16 +382,21 @@
       if (!text && !author) return;
 
       const container = article.closest('[data-testid="cellInnerDiv"]') || article;
-      const key = hash(text + '\u0000' + author);
+      const key = contentKey(text, handle);
 
       // 节点被回收复用时，先清掉上一条内容留下的状态
       if (container.dataset.sfKey !== key) {
         container.dataset.sfKey = '';
         container.dataset.sfState = '';
-        container.classList.remove('xdeck-filter-blocked');
+        unmarkBlocked(container);
       }
 
-      if (container.dataset.sfState === 'blocked' || container.dataset.sfState === 'allowed') return;
+      // 已判定为屏蔽的节点，每次扫描都重新补上隐藏，防止 React 重渲染把标记清掉造成闪动
+      if (container.dataset.sfState === 'blocked') {
+        markBlocked(container);
+        return;
+      }
+      if (container.dataset.sfState === 'allowed') return;
 
       // 1) 用户封禁优先：命中封禁列表直接隐藏（在关键词与 JEV 之前）
       if (matchHandle(handle)) {
@@ -444,13 +468,16 @@
 
       const container = article.closest('[data-testid="cellInnerDiv"]') || article;
       // 只做屏蔽，未命中不标记 allowed，交给 scan 走缓存/智能判别
-      if (container.dataset.sfState === 'blocked') return;
+      if (container.dataset.sfState === 'blocked') {
+        markBlocked(container);
+        return;
+      }
 
       // 用户封禁优先于关键词
       if (matchHandle(handle)) {
-        container.classList.add('xdeck-filter-blocked');
+        markBlocked(container);
         log('pre-hide handle:', '@' + handle, text.slice(0, 40));
-        const hkey = hash(text + '\u0000' + author);
+        const hkey = contentKey(text, handle);
         if (container.dataset.sfState !== 'blocked') {
           container.dataset.sfKey = hkey;
           container.dataset.sfState = 'blocked';
@@ -463,10 +490,10 @@
       const matched = matchContent(text, author);
       if (!matched) return;
 
-      container.classList.add('xdeck-filter-blocked');
+      markBlocked(container);
       log('pre-hide:', matched.hit, matched.where, (text || author).slice(0, 40));
       // 直接用 article 文本做 key，与 scan 保持一致
-      const key = hash(text + '\u0000' + author);
+      const key = contentKey(text, handle);
       if (container.dataset.sfState !== 'blocked') {
         container.dataset.sfKey = key;
         container.dataset.sfState = 'blocked';
@@ -486,7 +513,7 @@
   // 重置所有卡片的判定状态，然后重新扫描（关键词或缓存变更后调用）
   function rescanAll() {
     document.querySelectorAll('[data-sf-key]').forEach((el) => {
-      el.classList.remove('xdeck-filter-blocked');
+      unmarkBlocked(el);
       el.dataset.sfKey = '';
       el.dataset.sfState = '';
     });
@@ -1278,8 +1305,8 @@
       enabled = !enabled;
       localStorage.setItem(ENABLE_KEY, enabled ? '1' : '0');
       if (!enabled) {
-        document.querySelectorAll('.xdeck-filter-blocked').forEach((el) => {
-          el.classList.remove('xdeck-filter-blocked');
+        document.querySelectorAll('[data-sf-state="blocked"]').forEach((el) => {
+          unmarkBlocked(el);
           el.dataset.sfState = '';
         });
         blockedCount = 0;
@@ -1309,7 +1336,7 @@
   /* ==================== 自动检查更新 ==================== */
 
   const SCRIPT_VERSION =
-    (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '0.6.1';
+    (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '0.6.2';
   const REPO_URL = 'https://github.com/bestony/bestony-userscripts';
   const UPDATE_URL = 'https://raw.githubusercontent.com/bestony/bestony-userscripts/main/xdeck-smart-filter.user.js';
   const UPDATE_CHECK_KEY = 'xdeck-filter-update-check';
