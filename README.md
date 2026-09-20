@@ -24,6 +24,36 @@ Notes:
 - `window.__qqmailPlus` exposes `openUnreadSearch()`, `markSelectedRead()`, `selectedMailIds()` for
   manual testing from the console.
 
+### xdeck-smart-filter.user.js — X Pro Deck 智能屏蔽
+
+For [X Pro](https://pro.x.com/) decks (`pro.x.com/i/decks/*`).
+
+Filters timeline cards in a deck. Each card is first checked against a plain keyword list
+(seeded by `DEFAULT_KEYWORDS`), and only if nothing matches is it sent to the [TypeSafe](https://docs.typesafe.ai/api)
+`/v1/systemone` endpoint with the JEV model for a yes/no judgement. Matches are hidden.
+
+Configure at the top of the file:
+
+| Constant | Meaning |
+| --- | --- |
+| `DEFAULT_API_KEY` | Fallback TypeSafe API key. Empty means keyword-only mode. |
+| `MODEL_NAME` | Model id, defaults to `jev-latest`. |
+| `BASE_URL` | TypeSafe evaluation endpoint. |
+| `DEFAULT_KEYWORDS` | Initial blocklist checked before calling the API. |
+| `BLOCK_THRESHOLD` | JEV probability at/above which a card is hidden (default `0.5`). |
+
+Notes:
+
+- Requests go through `GM_xmlhttpRequest` (`@connect api.typesafe.ai`) because X's CSP/CORS
+  blocks a page-level `fetch` to a third-party origin.
+- Judgements are cached in `localStorage` for 7 days; retries use exponential backoff on
+  `429`/`529`/network errors, and at most 2 requests run at once.
+- A bottom-right badge shows the blocked count, toggles filtering, and opens a settings panel
+  where both the **API Key** and the **keywords** can be set at runtime (persisted in
+  `localStorage`, API key stored masked), with *恢复默认* and *清除智能缓存* actions.
+- `window.__xdeckFilter` exposes `scan()`, `getKeywords()`, `setKeywords([...])`,
+  `setApiKey('...')`, `cache`, and `judge()` for console testing.
+
 ## Install
 
 1. Install Tampermonkey.
