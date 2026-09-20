@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         X Pro Deck 智能屏蔽
 // @namespace    https://github.com/bestony/userscripts
-// @version      0.2.0
-// @description  X Pro Deck（pro.x.com）：关键词规则优先，未命中再调用 TypeSafe JEV 模型智能判别，屏蔽赌博/博彩等引流推广内容
+// @version      0.3.0
+// @description  X Pro Deck（pro.x.com）：关键词规则优先，未命中再调用 TypeSafe JEV 模型智能判别，屏蔽赌博/博彩等引流推广内容；支持选中文字右键加词与配置导入导出
 // @author       bestony
 // @match        https://pro.x.com/i/decks/*
 // @grant        GM_xmlhttpRequest
@@ -392,6 +392,59 @@
     rescanAll();
   }
 
+  // 导出配置：仅包含关键词，不包含 API Key
+  function exportConfig() {
+    return JSON.stringify(
+      { type: 'xdeck-filter-keywords', version: 1, keywords: keywords.slice() },
+      null,
+      2,
+    );
+  }
+
+  // 解析导入的配置：支持 { keywords: [...] } 或直接的字符串数组
+  function parseConfig(raw) {
+    let data;
+    try {
+      data = JSON.parse(raw);
+    } catch (e) {
+      throw new Error('不是合法的 JSON');
+    }
+    const list = Array.isArray(data) ? data : data && Array.isArray(data.keywords) ? data.keywords : null;
+    if (!list) throw new Error('未找到关键词列表');
+    return uniqueKeywords(list.map((k) => String(k).trim()).filter(Boolean));
+  }
+
+  function importConfig(raw) {
+    keywords = parseConfig(raw);
+    saveKeywords();
+    renderChips();
+    rescanAll();
+  }
+
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text);
+    }
+    return Promise.reject(new Error('clipboard unavailable'));
+  }
+
+  function downloadConfig(text) {
+    try {
+      const blob = new Blob([text], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const stamp = new Date().toISOString().slice(0, 10);
+      a.href = url;
+      a.download = 'xdeck-filter-keywords-' + stamp + '.json';
+      document.body.append(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (e) {
+      log('download config failed', e);
+    }
+  }
+
   function openPanel() {
     if (!panel) return;
     panel.classList.add('xdeck-filter-open');
@@ -485,6 +538,89 @@
     chipsEl = document.createElement('div');
     chipsEl.className = 'xdeck-filter-chips';
 
+    // 导入 / 导出关键词（不含 API Key）
+    const configWrap = document.createElement('div');
+    configWrap.className = 'xdeck-filter-config';
+
+    const configLabel = document.createElement('div');
+    configLabel.className = 'xdeck-filter-key-label';
+    const configHint = document.createElement('span');
+    configHint.textContent = '导入导出（仅关键词，不含 API Key）';
+
+    const configArea = document.createElement('textarea');
+    configArea.className = 'xdeck-filter-config-area';
+    configArea.rows = 3;
+    configArea.placeholder = '点击「导出配置」生成内容；粘贴配置后点击「导入配置」';
+
+    const configRow = document.createElement('div');
+    configRow.className = 'xdeck-filter-panel-row';
+    const exportBtn = document.createElement('button');
+    exportBtn.className = 'xdeck-filter-save';
+    exportBtn.type = 'button';
+    exportBtn.textContent = '导出配置';
+    const importBtn = document.createElement('button');
+    importBtn.className = 'xdeck-filter-save';
+    importBtn.type = 'button';
+    importBtn.textContent = '导入配置';
+    const fileInput = document.createElement('input');
+    fileInput.type = 'file';
+    fileInput.accept = '.json,application/json';
+    fileInput.style.display = 'none';
+
+    const flash = (btn, text) => {
+      if (!btn.dataset.label) btn.dataset.label = btn.textContent;
+      btn.textContent = text;
+      clearTimeout(btn._flashTimer);
+      btn._flashTimer = setTimeout(() => {
+        btn.textContent = btn.dataset.label;
+      }, 1200);
+    };
+
+    exportBtn.addEventListener('click', () => {
+      const text = exportConfig();
+      configArea.value = text;
+      configArea.select();
+      copyText(text).then(
+        () => flash(exportBtn, '已复制并下载'),
+        () => flash(exportBtn, '已生成并下载'),
+      );
+      downloadConfig(text);
+    });
+
+    importBtn.addEventListener('click', () => {
+      if (!configArea.value.trim()) {
+        fileInput.click();
+        return;
+      }
+      try {
+        importConfig(configArea.value);
+        flash(importBtn, '已导入');
+      } catch (e) {
+        alert('导入失败：' + e.message);
+      }
+    });
+
+    fileInput.addEventListener('change', () => {
+      const file = fileInput.files && fileInput.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        configArea.value = String(reader.result || '');
+        try {
+          importConfig(configArea.value);
+          flash(importBtn, '已导入');
+        } catch (e) {
+          alert('导入失败：' + e.message);
+        }
+      };
+      reader.readAsText(file);
+      fileInput.value = '';
+    });
+
+    configRow.append(exportBtn, importBtn, fileInput);
+    configWrap.append(configLabel, configArea, configRow);
+    configLabel.append(configHint);
+
     const foot = document.createElement('div');
     foot.className = 'xdeck-filter-panel-foot';
     const reset = document.createElement('button');
@@ -505,7 +641,7 @@
     clear.addEventListener('click', clearKeywordCache);
     foot.append(reset, clear);
 
-    panel.append(head, keyRow, row, chipsEl, foot);
+    panel.append(head, keyRow, row, chipsEl, configWrap, foot);
     document.body.append(panel);
     renderChips();
   }
@@ -682,6 +818,14 @@
     }
     .xdeck-filter-chip-del { color: #8b98a5 !important; font-size: 14px; line-height: 1; }
     .xdeck-filter-empty { color: #8b98a5; }
+    .xdeck-filter-config { display: flex; flex-direction: column; gap: 6px; }
+    textarea.xdeck-filter-config-area {
+      width: 100%; box-sizing: border-box; padding: 7px 9px; border-radius: 6px;
+      border: 1px solid #38444d; background: #192734; color: #e7e9ea;
+      font-size: 12px; line-height: 1.4; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      min-height: 54px; resize: vertical;
+    }
+    .xdeck-filter-config .xdeck-filter-panel-row button { flex: 1; background: #253341; color: #e7e9ea; }
     .xdeck-filter-panel-foot { display: flex; gap: 8px; }
     .xdeck-filter-menu {
       position: fixed; z-index: 100000; display: none; min-width: 140px;
@@ -724,6 +868,8 @@
     scan,
     cache,
     judge,
+    exportConfig,
+    importConfig,
     getKeywords: () => keywords.slice(),
     setKeywords: (list) => {
       keywords = uniqueKeywords((list || []).map((k) => String(k).trim()).filter(Boolean));
