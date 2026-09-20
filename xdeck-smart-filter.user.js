@@ -304,13 +304,30 @@
   let badge;
   let panel;
   let chipsEl;
+  let chipsToggle;
+  let configWrapEl;
   let contextMenu;
+  let chipsExpanded = false;
 
   function refreshBadge() {
     if (!badge) return;
     badge.querySelector('.xdeck-filter-count').textContent = String(blockedCount);
     badge.querySelector('.xdeck-filter-toggle').textContent = enabled ? '关闭' : '开启';
     badge.classList.toggle('xdeck-filter-off', !enabled);
+  }
+
+  // 默认只展示一行关键词，内容放不下时才显示「查看完整清单」开关
+  function updateChipsToggle() {
+    if (!chipsToggle || !chipsEl) return;
+    const overflow = chipsEl.scrollWidth > chipsEl.clientWidth + 1;
+    chipsToggle.style.display = overflow || chipsExpanded ? 'inline-block' : 'none';
+    chipsToggle.textContent = chipsExpanded ? '收起清单' : '查看完整清单';
+  }
+
+  function setChipsExpanded(expanded) {
+    chipsExpanded = expanded;
+    if (chipsEl) chipsEl.classList.toggle('xdeck-filter-chips-collapsed', !expanded);
+    updateChipsToggle();
   }
 
   function renderChips() {
@@ -322,6 +339,7 @@
       empty.className = 'xdeck-filter-empty';
       empty.textContent = '暂无关键词';
       chipsEl.append(empty);
+      updateChipsToggle();
       return;
     }
 
@@ -347,6 +365,8 @@
       chip.append(label, del);
       chipsEl.append(chip);
     });
+
+    updateChipsToggle();
   }
 
   // 拆分输入：用空格、英文/中文逗号或换行分隔
@@ -452,6 +472,8 @@
   function openPanel() {
     if (!panel) return;
     panel.classList.add('xdeck-filter-open');
+    // 面板显示后才有真实宽度，此时再判断清单是否需要折叠开关
+    updateChipsToggle();
   }
 
   function closePanel() {
@@ -540,7 +562,15 @@
     row.append(input, add);
 
     chipsEl = document.createElement('div');
-    chipsEl.className = 'xdeck-filter-chips';
+    chipsEl.className = 'xdeck-filter-chips xdeck-filter-chips-collapsed';
+
+    // 关键词清单折叠开关（内容溢出时才显示）
+    chipsToggle = document.createElement('a');
+    chipsToggle.className = 'xdeck-filter-chips-toggle';
+    chipsToggle.href = 'javascript:void(0)';
+    chipsToggle.style.display = 'none';
+    chipsToggle.textContent = '查看完整清单';
+    chipsToggle.addEventListener('click', () => setChipsExpanded(!chipsExpanded));
 
     // 导入 / 导出关键词（不含 API Key）
     const configWrap = document.createElement('div');
@@ -550,6 +580,15 @@
     configLabel.className = 'xdeck-filter-key-label';
     const configHint = document.createElement('span');
     configHint.textContent = '导入导出（仅关键词，不含 API Key）';
+
+    const configToggle = document.createElement('a');
+    configToggle.className = 'xdeck-filter-config-toggle';
+    configToggle.href = 'javascript:void(0)';
+    configToggle.textContent = '导入导出配置';
+    configLabel.append(configHint, configToggle);
+
+    const configBody = document.createElement('div');
+    configBody.className = 'xdeck-filter-config-body';
 
     const configArea = document.createElement('textarea');
     configArea.className = 'xdeck-filter-config-area';
@@ -622,8 +661,16 @@
     });
 
     configRow.append(exportBtn, importBtn, fileInput);
-    configWrap.append(configLabel, configArea, configRow);
-    configLabel.append(configHint);
+    configBody.append(configArea, configRow);
+    configWrap.append(configLabel, configBody);
+    // 输入框默认收起，点击「导入导出配置」后再展开
+    configWrapEl = configWrap;
+    configToggle.addEventListener('click', () => {
+      configWrap.classList.toggle('xdeck-filter-config-open');
+      configToggle.textContent = configWrap.classList.contains('xdeck-filter-config-open')
+        ? '收起'
+        : '导入导出配置';
+    });
 
     const foot = document.createElement('div');
     foot.className = 'xdeck-filter-panel-foot';
@@ -645,7 +692,7 @@
     clear.addEventListener('click', clearKeywordCache);
     foot.append(reset, clear);
 
-    panel.append(head, keyRow, row, chipsEl, configWrap, foot);
+    panel.append(head, keyRow, row, chipsEl, chipsToggle, configWrap, foot);
     document.body.append(panel);
     renderChips();
   }
@@ -899,13 +946,23 @@
     }
     .xdeck-filter-reset, .xdeck-filter-clear { background: #253341; color: #e7e9ea; }
     .xdeck-filter-chips { display: flex; flex-wrap: wrap; gap: 6px; max-height: 180px; overflow: auto; }
+    .xdeck-filter-chips.xdeck-filter-chips-collapsed {
+      flex-wrap: nowrap; overflow: hidden; max-height: 26px; align-items: center;
+    }
     .xdeck-filter-chip {
       display: inline-flex; align-items: center; gap: 6px;
       padding: 3px 8px; border-radius: 999px; background: #253341; font-size: 12px;
     }
+    .xdeck-filter-chips-collapsed .xdeck-filter-chip { flex: none; }
     .xdeck-filter-chip-del { color: #8b98a5 !important; font-size: 14px; line-height: 1; }
     .xdeck-filter-empty { color: #8b98a5; }
+    .xdeck-filter-chips-toggle, .xdeck-filter-config-toggle {
+      color: #1d9bf0 !important; font-size: 12px; text-decoration: none; cursor: pointer;
+    }
+    .xdeck-filter-chips-toggle { align-self: flex-start; }
     .xdeck-filter-config { display: flex; flex-direction: column; gap: 6px; }
+    .xdeck-filter-config-body { display: none; flex-direction: column; gap: 6px; }
+    .xdeck-filter-config.xdeck-filter-config-open .xdeck-filter-config-body { display: flex; }
     textarea.xdeck-filter-config-area {
       width: 100%; box-sizing: border-box; padding: 7px 9px; border-radius: 6px;
       border: 1px solid #38444d; background: #192734; color: #e7e9ea;
