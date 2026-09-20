@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         X Pro Deck 智能屏蔽
-// @namespace    https://github.com/bestony/userscripts
+// @namespace    https://github.com/bestony/bestony-userscripts
 // @version      0.6.2
 // @description  X Pro Deck（pro.x.com）：按用户 handle 封禁优先，其次关键词规则，最后调用 TypeSafe JEV 模型智能判别，屏蔽赌博/博彩等引流推广内容；支持手动封禁用户、右键加词与配置导入导出
 // @author       bestony

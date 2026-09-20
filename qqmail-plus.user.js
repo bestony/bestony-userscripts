@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         QQ邮箱增强
-// @namespace    https://github.com/bestony/userscripts
+// @namespace    https://github.com/bestony/bestony-userscripts
 // @version      0.3.0
 // @description  QQ邮箱：顶部一键查看未读邮件；工具栏一键把所选邮件标记为已读；隐藏工具栏「全部已读」
 // @author       bestony
