@@ -300,6 +300,7 @@
   let badge;
   let panel;
   let chipsEl;
+  let contextMenu;
 
   function refreshBadge() {
     if (!badge) return;
@@ -509,6 +510,75 @@
     renderChips();
   }
 
+  /* ==================== 选中文字右键菜单 ==================== */
+
+  // 获取当前选中的纯文本（排除输入框内的选区）
+  function getSelectionText() {
+    const active = document.activeElement;
+    if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable)) {
+      return '';
+    }
+    const sel = window.getSelection();
+    return sel ? sel.toString().replace(/\s+/g, ' ').trim() : '';
+  }
+
+  function hideContextMenu() {
+    if (contextMenu) contextMenu.classList.remove('xdeck-filter-menu-open');
+  }
+
+  function showContextMenu(x, y, text) {
+    if (!contextMenu) return;
+
+    const label = text.length > 24 ? text.slice(0, 24) + '…' : text;
+    contextMenu.textContent = '';
+
+    const add = document.createElement('a');
+    add.className = 'xdeck-filter-menu-item';
+    add.href = 'javascript:void(0)';
+    add.textContent = '加入屏蔽词：' + label;
+    add.addEventListener('click', () => {
+      addKeywords(text);
+      hideContextMenu();
+    });
+
+    contextMenu.append(add);
+    contextMenu.classList.add('xdeck-filter-menu-open');
+
+    // 定位到鼠标位置，并避免超出视口
+    const rect = contextMenu.getBoundingClientRect();
+    const left = Math.min(x, window.innerWidth - rect.width - 8);
+    const top = Math.min(y, window.innerHeight - rect.height - 8);
+    contextMenu.style.left = Math.max(8, left) + 'px';
+    contextMenu.style.top = Math.max(8, top) + 'px';
+  }
+
+  function injectContextMenu() {
+    if (contextMenu || !document.body) return;
+
+    contextMenu = document.createElement('div');
+    contextMenu.className = 'xdeck-filter-menu';
+    document.body.append(contextMenu);
+
+    document.addEventListener('contextmenu', (e) => {
+      const text = getSelectionText();
+      if (!text) {
+        hideContextMenu();
+        return;
+      }
+      e.preventDefault();
+      showContextMenu(e.clientX, e.clientY, text);
+    });
+
+    document.addEventListener('mousedown', (e) => {
+      if (contextMenu && !contextMenu.contains(e.target)) hideContextMenu();
+    });
+    document.addEventListener('scroll', hideContextMenu, true);
+    window.addEventListener('resize', hideContextMenu);
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') hideContextMenu();
+    });
+  }
+
   function injectBadge() {
     if (badge || !document.body) return;
 
@@ -613,6 +683,18 @@
     .xdeck-filter-chip-del { color: #8b98a5 !important; font-size: 14px; line-height: 1; }
     .xdeck-filter-empty { color: #8b98a5; }
     .xdeck-filter-panel-foot { display: flex; gap: 8px; }
+    .xdeck-filter-menu {
+      position: fixed; z-index: 100000; display: none; min-width: 140px;
+      padding: 4px; border-radius: 8px; background: #15202b;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, .5); border: 1px solid #38444d;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    .xdeck-filter-menu.xdeck-filter-menu-open { display: block; }
+    .xdeck-filter-menu-item {
+      display: block; padding: 8px 10px; border-radius: 6px;
+      color: #e7e9ea !important; font-size: 13px; text-decoration: none; white-space: nowrap;
+    }
+    .xdeck-filter-menu-item:hover { background: #1d9bf0; }
   `;
   document.head.append(style);
 
@@ -623,6 +705,7 @@
       scheduled = 0;
       injectBadge();
       injectPanel();
+      injectContextMenu();
       scan();
     }, 300);
   });
@@ -630,6 +713,7 @@
 
   injectBadge();
   injectPanel();
+  injectContextMenu();
   scan();
   setInterval(scan, 3000); // 兜底：UI 虚拟滚动偶尔不触发 MutationObserver
 
