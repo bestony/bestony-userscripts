@@ -220,6 +220,12 @@
       .join('\n');
   }
 
+  // 用户名（昵称 + @handle），用于关键词匹配
+  function tweetAuthor(article) {
+    const name = article.querySelector('[data-testid="User-Name"]');
+    return name ? name.textContent : '';
+  }
+
   function apply(container, blocked, key) {
     container.dataset.sfKey = key;
     container.dataset.sfState = blocked ? 'blocked' : 'allowed';
@@ -230,15 +236,26 @@
     }
   }
 
+  // 在文字/用户名全文里匹配关键词（用户名也参与命中）
+  function matchContent(text, author) {
+    const hit = matchKeyword(text);
+    if (hit) return { hit, where: 'text' };
+    // 用户名同时按原文与小写匹配（@handle 通常是小写）
+    const hitAuthor = matchKeyword(author) || matchKeyword(author.toLowerCase());
+    if (hitAuthor) return { hit: hitAuthor, where: 'author' };
+    return null;
+  }
+
   function scan() {
     if (!enabled) return;
 
     document.querySelectorAll('article[data-testid="tweet"]').forEach((article) => {
       const text = normalize(tweetText(article));
-      if (!text) return;
+      const author = normalize(tweetAuthor(article));
+      if (!text && !author) return;
 
       const container = article.closest('[data-testid="cellInnerDiv"]') || article;
-      const key = hash(text);
+      const key = hash(text + '\u0000' + author);
 
       // 节点被回收复用时，先清掉上一条内容留下的状态
       if (container.dataset.sfKey !== key) {
@@ -249,22 +266,22 @@
 
       if (container.dataset.sfState === 'blocked' || container.dataset.sfState === 'allowed') return;
 
-      // 1) 关键词规则优先
-      const hit = matchKeyword(text);
-      if (hit) {
-        log('keyword hit:', hit, text.slice(0, 40));
+      // 1) 关键词规则优先（正文或用户名命中即屏蔽）
+      const matched = matchContent(text, author);
+      if (matched) {
+        log('keyword hit:', matched.hit, matched.where, (text || author).slice(0, 40));
         apply(container, true, key);
         return;
       }
 
-      // 2) 命中缓存
-      if (cache[key]) {
+      // 2) 命中缓存（无正文时不缓存，避免污染）
+      if (text && cache[key]) {
         apply(container, !!cache[key].b, key);
         return;
       }
 
       // 3) 无 API Key 时只跑关键词
-      if (!apiKey) return;
+      if (!apiKey || !text) return;
 
       if (inFlight.has(key)) return;
       inFlight.add(key);
@@ -287,6 +304,41 @@
     });
   }
 
+  // 新节点插入时同步做一次关键词预屏蔽：
+  // 只处理关键词能立刻命中的内容，让它在进入视口前就隐藏，避免先显示再消失的跳变
+  function preHideByKeyword(root) {
+    const articles =
+      root.matches && root.matches('article[data-testid="tweet"]')
+        ? [root]
+        : root.querySelectorAll
+          ? [...root.querySelectorAll('article[data-testid="tweet"]')]
+          : [];
+
+    articles.forEach((article) => {
+      const text = normalize(tweetText(article));
+      const author = normalize(tweetAuthor(article));
+      if (!text && !author) return;
+
+      const container = article.closest('[data-testid="cellInnerDiv"]') || article;
+      // 只做屏蔽，未命中不标记 allowed，交给 scan 走缓存/智能判别
+      if (container.dataset.sfState === 'blocked') return;
+
+      const matched = matchContent(text, author);
+      if (!matched) return;
+
+      container.classList.add('xdeck-filter-blocked');
+      log('pre-hide:', matched.hit, matched.where, (text || author).slice(0, 40));
+      // 直接用 article 文本做 key，与 scan 保持一致
+      const key = hash(text + '\u0000' + author);
+      if (container.dataset.sfState !== 'blocked') {
+        container.dataset.sfKey = key;
+        container.dataset.sfState = 'blocked';
+        blockedCount++;
+        refreshBadge();
+      }
+    });
+  }
+
   // 重置所有卡片的判定状态，然后重新扫描（关键词或缓存变更后调用）
   function rescanAll() {
     document.querySelectorAll('[data-sf-key]').forEach((el) => {
@@ -298,6 +350,7 @@
     refreshBadge();
     scan();
   }
+
 
   /* ======================= UI ======================= */
 
@@ -998,7 +1051,17 @@
   document.head.append(style);
 
   let scheduled = 0;
-  const observer = new MutationObserver(() => {
+  const observer = new MutationObserver((mutations) => {
+    // 新增节点先做一次同步的「关键词预屏蔽」，尽量在进入视口前就隐藏，避免跳变
+    if (enabled) {
+      for (const m of mutations) {
+        for (const node of m.addedNodes) {
+          if (node.nodeType !== 1) continue;
+          preHideByKeyword(node);
+        }
+      }
+    }
+
     if (scheduled) return;
     scheduled = setTimeout(() => {
       scheduled = 0;
@@ -1006,7 +1069,7 @@
       injectPanel();
       injectContextMenu();
       scan();
-    }, 300);
+    }, 150);
   });
   observer.observe(document.body, { childList: true, subtree: true });
 
