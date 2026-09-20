@@ -344,10 +344,38 @@
     });
   }
 
-  function addKeyword(raw) {
-    const kw = String(raw || '').trim();
-    if (!kw || keywords.indexOf(kw) !== -1) return;
-    keywords.push(kw);
+  // 拆分输入：用空格、英文/中文逗号或换行分隔
+  function splitKeywords(raw) {
+    return String(raw || '')
+      .split(/[\s,，]+/)
+      .map((k) => k.trim())
+      .filter(Boolean);
+  }
+
+  // 去重，保持原有顺序
+  function uniqueKeywords(list) {
+    const seen = new Set();
+    return list.filter((k) => {
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+  }
+
+  // 支持一次添加多个关键词，自动去重（含本次输入内部的重复）
+  function addKeywords(raw) {
+    const seen = new Set(keywords);
+    let added = false;
+
+    splitKeywords(raw).forEach((kw) => {
+      if (seen.has(kw)) return;
+      seen.add(kw);
+      keywords.push(kw);
+      added = true;
+    });
+
+    if (!added) return;
+
     saveKeywords();
     renderChips();
     rescanAll();
@@ -433,22 +461,23 @@
 
     const row = document.createElement('div');
     row.className = 'xdeck-filter-panel-row';
-    const input = document.createElement('input');
+    const input = document.createElement('textarea');
     input.className = 'xdeck-filter-input';
-    input.type = 'text';
-    input.placeholder = '输入关键词后回车添加';
+    input.rows = 2;
+    input.placeholder = '多个关键词用空格、逗号或换行分隔';
     const add = document.createElement('button');
     add.className = 'xdeck-filter-add';
     add.type = 'button';
     add.textContent = '添加';
     const submit = () => {
-      addKeyword(input.value);
+      addKeywords(input.value);
       input.value = '';
       input.focus();
     };
     add.addEventListener('click', submit);
+    // 回车换行；Ctrl/Cmd + 回车提交
     input.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') submit();
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) submit();
     });
     row.append(input, add);
 
@@ -556,7 +585,7 @@
       font-weight: 600; font-size: 14px;
     }
     .xdeck-filter-panel-close { color: #8b98a5 !important; font-size: 18px; line-height: 1; }
-    .xdeck-filter-panel-row { display: flex; gap: 8px; }
+    .xdeck-filter-panel-row { display: flex; gap: 8px; align-items: flex-start; }
     .xdeck-filter-key { display: flex; flex-direction: column; gap: 6px; }
     .xdeck-filter-key-label {
       display: flex; align-items: baseline; justify-content: space-between;
@@ -567,6 +596,9 @@
     .xdeck-filter-input, .xdeck-filter-apikey {
       flex: 1; min-width: 0; padding: 7px 9px; border-radius: 6px;
       border: 1px solid #38444d; background: #192734; color: #e7e9ea; font-size: 13px;
+    }
+    textarea.xdeck-filter-input {
+      min-height: 46px; resize: vertical; line-height: 1.4; font-family: inherit;
     }
     .xdeck-filter-add, .xdeck-filter-save, .xdeck-filter-reset, .xdeck-filter-clear {
       padding: 7px 10px; border-radius: 6px; border: none; cursor: pointer;
@@ -610,7 +642,7 @@
     judge,
     getKeywords: () => keywords.slice(),
     setKeywords: (list) => {
-      keywords = (list || []).map((k) => String(k).trim()).filter(Boolean);
+      keywords = uniqueKeywords((list || []).map((k) => String(k).trim()).filter(Boolean));
       saveKeywords();
       renderChips();
       rescanAll();
