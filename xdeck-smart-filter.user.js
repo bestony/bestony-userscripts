@@ -1,13 +1,17 @@
 // ==UserScript==
 // @name         X Pro Deck 智能屏蔽
 // @namespace    https://github.com/bestony/userscripts
-// @version      0.3.0
+// @version      0.4.0
 // @description  X Pro Deck（pro.x.com）：关键词规则优先，未命中再调用 TypeSafe JEV 模型智能判别，屏蔽赌博/博彩等引流推广内容；支持选中文字右键加词与配置导入导出
 // @author       bestony
 // @match        https://pro.x.com/i/decks/*
 // @grant        GM_xmlhttpRequest
+// @grant        GM_info
 // @connect      api.typesafe.ai
+// @connect      raw.githubusercontent.com
 // @run-at       document-idle
+// @updateURL    https://raw.githubusercontent.com/bestony/bestony-userscripts/main/xdeck-smart-filter.user.js
+// @downloadURL  https://raw.githubusercontent.com/bestony/bestony-userscripts/main/xdeck-smart-filter.user.js
 // ==/UserScript==
 
 (function () {
@@ -763,6 +767,89 @@
     refreshBadge();
   }
 
+  /* ==================== 自动检查更新 ==================== */
+
+  const SCRIPT_VERSION =
+    (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '0.4.0';
+  const UPDATE_URL = 'https://raw.githubusercontent.com/bestony/bestony-userscripts/main/xdeck-smart-filter.user.js';
+  const UPDATE_CHECK_KEY = 'xdeck-filter-update-check';
+  const UPDATE_CHECK_INTERVAL = 12 * 3600 * 1000;
+  const VERSION_RE = /\/\/\s*@version\s+([^\s]+)/;
+
+  function parseVersion(v) {
+    return String(v).split('.').map((n) => parseInt(n, 10) || 0);
+  }
+
+  function isNewer(remote, local) {
+    const a = parseVersion(remote);
+    const b = parseVersion(local);
+    for (let i = 0; i < Math.max(a.length, b.length); i++) {
+      const x = a[i] || 0;
+      const y = b[i] || 0;
+      if (x !== y) return x > y;
+    }
+    return false;
+  }
+
+  function showUpdateNotice(version) {
+    if (!document.body || document.querySelector('.xdeck-filter-update')) return;
+
+    const bar = document.createElement('div');
+    bar.className = 'xdeck-filter-update';
+
+    const text = document.createElement('span');
+    text.textContent = '发现新版本 v' + version + '（当前 v' + SCRIPT_VERSION + '）';
+
+    const link = document.createElement('a');
+    link.href = UPDATE_URL;
+    link.target = '_blank';
+    link.rel = 'noopener';
+    link.textContent = '立即更新';
+
+    const close = document.createElement('a');
+    close.className = 'xdeck-filter-update-close';
+    close.href = 'javascript:void(0)';
+    close.title = '忽略';
+    close.textContent = '×';
+    close.addEventListener('click', () => bar.remove());
+
+    bar.append(text, link, close);
+    document.body.append(bar);
+  }
+
+  function checkUpdate(force) {
+    if (typeof GM_xmlhttpRequest !== 'function') return;
+    const now = Date.now();
+    try {
+      const last = Number(localStorage.getItem(UPDATE_CHECK_KEY)) || 0;
+      if (!force && now - last < UPDATE_CHECK_INTERVAL) return;
+    } catch (e) {
+      /* ignore */
+    }
+
+    GM_xmlhttpRequest({
+      method: 'GET',
+      url: UPDATE_URL + '?t=' + now,
+      timeout: 20000,
+      onload: (res) => {
+        if (res.status !== 200) return;
+        const m = VERSION_RE.exec(res.responseText);
+        if (!m) return;
+        try {
+          localStorage.setItem(UPDATE_CHECK_KEY, String(now));
+        } catch (e) {
+          /* ignore */
+        }
+        if (isNewer(m[1], SCRIPT_VERSION)) {
+          log('update available:', SCRIPT_VERSION, '->', m[1]);
+          showUpdateNotice(m[1]);
+        }
+      },
+      onerror: () => log('update check failed'),
+      ontimeout: () => log('update check failed'),
+    });
+  }
+
   /* ====================== 启动 ====================== */
 
   const style = document.createElement('style');
@@ -839,6 +926,17 @@
       color: #e7e9ea !important; font-size: 13px; text-decoration: none; white-space: nowrap;
     }
     .xdeck-filter-menu-item:hover { background: #1d9bf0; }
+    .xdeck-filter-update {
+      position: fixed; top: 12px; left: 50%; z-index: 100001;
+      display: flex; align-items: center; gap: 10px;
+      padding: 8px 14px; border-radius: 8px;
+      background: #1d9bf0; color: #fff; font-size: 13px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      transform: translateX(-50%);
+      box-shadow: 0 6px 20px rgba(0, 0, 0, .35);
+    }
+    .xdeck-filter-update a { color: #fff; font-weight: 600; text-decoration: underline; }
+    .xdeck-filter-update-close { text-decoration: none !important; font-size: 16px; line-height: 1; opacity: .85; }
   `;
   document.head.append(style);
 
@@ -859,6 +957,7 @@
   injectPanel();
   injectContextMenu();
   scan();
+  checkUpdate();
   setInterval(scan, 3000); // 兜底：UI 虚拟滚动偶尔不触发 MutationObserver
 
   if (!apiKey) log('未配置 API Key，仅启用关键词规则');
@@ -870,6 +969,7 @@
     judge,
     exportConfig,
     importConfig,
+    checkUpdate,
     getKeywords: () => keywords.slice(),
     setKeywords: (list) => {
       keywords = uniqueKeywords((list || []).map((k) => String(k).trim()).filter(Boolean));

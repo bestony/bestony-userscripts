@@ -1,12 +1,16 @@
 // ==UserScript==
 // @name         QQ邮箱增强
 // @namespace    https://github.com/bestony/userscripts
-// @version      0.2.0
+// @version      0.3.0
 // @description  QQ邮箱：顶部一键查看未读邮件；工具栏一键把所选邮件标记为已读；隐藏工具栏「全部已读」
 // @author       bestony
 // @match        https://wx.mail.qq.com/*
 // @run-at       document-idle
-// @grant        none
+// @grant        GM_xmlhttpRequest
+// @grant        GM_info
+// @connect      raw.githubusercontent.com
+// @updateURL    https://raw.githubusercontent.com/bestony/bestony-userscripts/main/qqmail-plus.user.js
+// @downloadURL  https://raw.githubusercontent.com/bestony/bestony-userscripts/main/qqmail-plus.user.js
 // ==/UserScript==
 
 (function () {
@@ -181,6 +185,89 @@
     hideMarkAllRead();
   }
 
+  /* ---------------- 自动检查更新 ---------------- */
+
+  const SCRIPT_VERSION =
+    (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '0.3.0';
+  const UPDATE_URL = 'https://raw.githubusercontent.com/bestony/bestony-userscripts/main/qqmail-plus.user.js';
+  const UPDATE_CHECK_KEY = 'qqmail-plus-update-check';
+  const UPDATE_CHECK_INTERVAL = 12 * 3600 * 1000;
+  const VERSION_RE = /\/\/\s*@version\s+([^\s]+)/;
+
+  function parseVersion(v) {
+    return String(v).split('.').map((n) => parseInt(n, 10) || 0);
+  }
+
+  function isNewer(remote, local) {
+    const a = parseVersion(remote);
+    const b = parseVersion(local);
+    for (let i = 0; i < Math.max(a.length, b.length); i++) {
+      const x = a[i] || 0;
+      const y = b[i] || 0;
+      if (x !== y) return x > y;
+    }
+    return false;
+  }
+
+  function showUpdateNotice(version) {
+    if (document.querySelector('.qqmail-plus-update')) return;
+
+    const bar = document.createElement('div');
+    bar.className = 'qqmail-plus-update';
+
+    const text = document.createElement('span');
+    text.textContent = '发现新版本 v' + version + '（当前 v' + SCRIPT_VERSION + '）';
+
+    const link = document.createElement('a');
+    link.href = UPDATE_URL;
+    link.target = '_blank';
+    link.rel = 'noopener';
+    link.textContent = '立即更新';
+
+    const close = document.createElement('a');
+    close.className = 'qqmail-plus-update-close';
+    close.href = 'javascript:void(0)';
+    close.title = '忽略';
+    close.textContent = '×';
+    close.addEventListener('click', () => bar.remove());
+
+    bar.append(text, link, close);
+    document.body.append(bar);
+  }
+
+  function checkUpdate(force) {
+    if (typeof GM_xmlhttpRequest !== 'function') return;
+    const now = Date.now();
+    try {
+      const last = Number(localStorage.getItem(UPDATE_CHECK_KEY)) || 0;
+      if (!force && now - last < UPDATE_CHECK_INTERVAL) return;
+    } catch (e) {
+      /* ignore */
+    }
+
+    GM_xmlhttpRequest({
+      method: 'GET',
+      url: UPDATE_URL + '?t=' + now,
+      timeout: 20000,
+      onload: (res) => {
+        if (res.status !== 200) return;
+        const m = VERSION_RE.exec(res.responseText);
+        if (!m) return;
+        try {
+          localStorage.setItem(UPDATE_CHECK_KEY, String(now));
+        } catch (e) {
+          /* ignore */
+        }
+        if (isNewer(m[1], SCRIPT_VERSION)) {
+          log('update available:', SCRIPT_VERSION, '->', m[1]);
+          showUpdateNotice(m[1]);
+        }
+      },
+      onerror: () => log('update check failed'),
+      ontimeout: () => log('update check failed'),
+    });
+  }
+
   /* ---------------- toast ---------------- */
 
   let toastTimer = 0;
@@ -211,8 +298,20 @@
       transition: opacity .18s, transform .18s; pointer-events: none;
     }
     .qqmail-plus-toast.is-show { opacity: 1; transform: translateX(-50%) translateY(0); }
+    .qqmail-plus-update {
+      position: fixed; top: 12px; left: 50%; z-index: 99999;
+      display: flex; align-items: center; gap: 10px;
+      padding: 8px 14px; border-radius: 8px;
+      background: #1d9bf0; color: #fff; font-size: 13px;
+      transform: translateX(-50%);
+      box-shadow: 0 6px 20px rgba(0, 0, 0, .3);
+    }
+    .qqmail-plus-update a { color: #fff; font-weight: 600; text-decoration: underline; }
+    .qqmail-plus-update-close { text-decoration: none !important; font-size: 16px; line-height: 1; opacity: .85; }
   `;
   document.head.append(style);
+
+  checkUpdate();
 
   // SPA 路由，DOM 一直在变；debounce 后补齐注入（已注入时是空跑）
   let scheduled = 0;
@@ -225,6 +324,6 @@
   ensureInjected();
 
   // 控制台自测入口：__qqmailPlus.openUnreadSearch() / __qqmailPlus.markSelectedRead()
-  window.__qqmailPlus = { openUnreadSearch, markSelectedRead, selectedMailIds, updateView };
+  window.__qqmailPlus = { openUnreadSearch, markSelectedRead, selectedMailIds, updateView, checkUpdate };
   log('loaded');
 })();
