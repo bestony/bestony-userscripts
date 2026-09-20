@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X Pro Deck 智能屏蔽
 // @namespace    https://github.com/bestony/userscripts
-// @version      0.6.0
+// @version      0.6.1
 // @description  X Pro Deck（pro.x.com）：按用户 handle 封禁优先，其次关键词规则，最后调用 TypeSafe JEV 模型智能判别，屏蔽赌博/博彩等引流推广内容；支持手动封禁用户、右键加词与配置导入导出
 // @author       bestony
 // @match        https://pro.x.com/i/decks/*
@@ -321,6 +321,18 @@
     return '';
   }
 
+  // 提取显示昵称（用于右键屏蔽时的确认）
+  function tweetDisplayName(article) {
+    const link = article.querySelector('[data-testid="User-Name"] a[href^="/"]');
+    return link ? normalize(link.textContent) : '';
+  }
+
+  // 提取头像地址（用于右键屏蔽时的确认）
+  function tweetAvatar(article) {
+    const img = article.querySelector('[data-testid="Tweet-User-Avatar"] img');
+    return img ? img.getAttribute('src') || '' : '';
+  }
+
   function apply(container, blocked, key) {
     container.dataset.sfKey = key;
     container.dataset.sfState = blocked ? 'blocked' : 'allowed';
@@ -493,6 +505,7 @@
   let chipsToggle;
   let configWrapEl;
   let contextMenu;
+  let confirmEl;
   let chipsExpanded = false;
 
   function refreshBadge() {
@@ -778,6 +791,21 @@
     keyRow.append(keyLabel, keyInputRow);
     updateKeyStatus();
 
+    // 关键词输入默认收起，点击标题右侧「添加关键词」展开
+    const kwBlock = document.createElement('div');
+    kwBlock.className = 'xdeck-filter-section';
+    const kwLabel = document.createElement('div');
+    kwLabel.className = 'xdeck-filter-key-label';
+    const kwTitle = document.createElement('span');
+    kwTitle.textContent = '关键词';
+    const kwToggle = document.createElement('a');
+    kwToggle.className = 'xdeck-filter-config-toggle';
+    kwToggle.href = 'javascript:void(0)';
+    kwToggle.textContent = '添加关键词';
+    kwLabel.append(kwTitle, kwToggle);
+    const kwBody = document.createElement('div');
+    kwBody.className = 'xdeck-filter-section-body';
+
     const row = document.createElement('div');
     row.className = 'xdeck-filter-panel-row';
     const input = document.createElement('textarea');
@@ -811,12 +839,27 @@
     chipsToggle.textContent = '查看完整清单';
     chipsToggle.addEventListener('click', () => setChipsExpanded(!chipsExpanded));
 
-    // 封禁用户（handle）：命中的内容在关键词与 JEV 之前直接隐藏
+    kwBody.append(row);
+    kwBlock.append(kwLabel, kwBody, chipsEl, chipsToggle);
+    kwToggle.addEventListener('click', () => {
+      const open = kwBlock.classList.toggle('xdeck-filter-section-open');
+      kwToggle.textContent = open ? '收起' : '添加关键词';
+    });
+
+    // 封禁用户（handle）：命中的内容在关键词与 JEV 之前直接隐藏；输入框默认收起
     const handleBlock = document.createElement('div');
-    handleBlock.className = 'xdeck-filter-key';
+    handleBlock.className = 'xdeck-filter-section';
     const handleLabel = document.createElement('div');
     handleLabel.className = 'xdeck-filter-key-label';
-    handleLabel.textContent = '封禁用户（@handle）';
+    const handleTitle = document.createElement('span');
+    handleTitle.textContent = '封禁用户（@handle）';
+    const handleToggle = document.createElement('a');
+    handleToggle.className = 'xdeck-filter-config-toggle';
+    handleToggle.href = 'javascript:void(0)';
+    handleToggle.textContent = '添加封禁';
+    handleLabel.append(handleTitle, handleToggle);
+    const handleBody = document.createElement('div');
+    handleBody.className = 'xdeck-filter-section-body';
 
     const handleRow = document.createElement('div');
     handleRow.className = 'xdeck-filter-panel-row';
@@ -842,7 +885,12 @@
     handleChipsEl = document.createElement('div');
     handleChipsEl.className = 'xdeck-filter-chips xdeck-filter-chips-collapsed';
 
-    handleBlock.append(handleLabel, handleRow, handleChipsEl);
+    handleBody.append(handleRow);
+    handleBlock.append(handleLabel, handleBody, handleChipsEl);
+    handleToggle.addEventListener('click', () => {
+      const open = handleBlock.classList.toggle('xdeck-filter-section-open');
+      handleToggle.textContent = open ? '收起' : '添加封禁';
+    });
 
     // 导入 / 导出关键词与封禁用户（不含 API Key）
     const configWrap = document.createElement('div');
@@ -999,7 +1047,7 @@
 
     info.append(versionLine, repoLine, checkLine);
 
-    panel.append(head, keyRow, row, chipsEl, chipsToggle, handleBlock, configWrap, foot, info);
+    panel.append(head, keyRow, kwBlock, handleBlock, configWrap, foot, info);
     document.body.append(panel);
     renderChips();
     renderHandleChips();
@@ -1021,25 +1069,56 @@
     if (contextMenu) contextMenu.classList.remove('xdeck-filter-menu-open');
   }
 
-  function showContextMenu(x, y, text, handle) {
+  // 判断选中的文字本身是否就是一个 @handle（用于区分「选中账号」与「普通文字」）
+  function handleFromText(text) {
+    const t = String(text || '').trim();
+    const m = /^@?([A-Za-z0-9_]{1,15})$/.exec(t);
+    return t.charAt(0) === '@' && m ? m[1].toLowerCase() : '';
+  }
+
+  function showContextMenu(x, y, text, user) {
     if (!contextMenu) return;
 
     contextMenu.textContent = '';
 
-    // 屏蔽用户优先，可直接封禁当前卡片作者
-    if (handle && !blockedHandleSet.has(handle)) {
-      const blockUser = document.createElement('a');
-      blockUser.className = 'xdeck-filter-menu-item';
-      blockUser.href = 'javascript:void(0)';
-      blockUser.textContent = '屏蔽用户：@' + handle;
-      blockUser.addEventListener('click', () => {
-        addBlockedHandle(handle);
-        hideContextMenu();
+    const cardHandle = (user && user.handle) || '';
+    const selectedHandle = handleFromText(text);
+
+    // 屏蔽目标：优先「选中的账号」，其次「当前卡片作者」，去重后逐个展示
+    const targets = [];
+    if (selectedHandle && !blockedHandleSet.has(selectedHandle)) {
+      // 选中的正是当前卡片作者时，带上昵称与头像，方便确认
+      const same = selectedHandle === cardHandle;
+      targets.push({
+        handle: selectedHandle,
+        name: same ? user.name : '',
+        avatar: same ? user.avatar : '',
+        selected: true,
       });
-      contextMenu.append(blockUser);
+    }
+    if (cardHandle && cardHandle !== selectedHandle && !blockedHandleSet.has(cardHandle)) {
+      targets.push({ handle: cardHandle, name: user.name, avatar: user.avatar, selected: false });
     }
 
-    if (text) {
+    targets.forEach((target) => {
+      const item = document.createElement('a');
+      item.className = 'xdeck-filter-menu-item';
+      item.href = 'javascript:void(0)';
+      if (target.selected) {
+        item.textContent = '屏蔽选中账号：@' + target.handle;
+      } else {
+        item.textContent = '屏蔽该用户：@' + target.handle + (target.name ? '（' + target.name + '）' : '');
+      }
+      item.addEventListener('click', () => {
+        hideContextMenu();
+        // 屏蔽前先确认，避免选错账号
+        openConfirm(target, () => addBlockedHandle(target.handle));
+      });
+      contextMenu.append(item);
+    });
+
+    // 选中普通文字时提供加词；选中的是 @handle 则不再重复提供
+    if (text && !selectedHandle) {
       const label = text.length > 24 ? text.slice(0, 24) + '…' : text;
       const add = document.createElement('a');
       add.className = 'xdeck-filter-menu-item';
@@ -1078,12 +1157,14 @@
       const text = getSelectionText();
       const article = e.target && e.target.closest ? e.target.closest('article[data-testid="tweet"]') : null;
       const handle = article ? tweetHandle(article) : '';
+      const name = article ? tweetDisplayName(article) : '';
+      const avatar = article ? tweetAvatar(article) : '';
       if (!text && !handle) {
         hideContextMenu();
         return;
       }
       e.preventDefault();
-      showContextMenu(e.clientX, e.clientY, text, handle);
+      showContextMenu(e.clientX, e.clientY, text, { handle, name, avatar });
     });
 
     document.addEventListener('mousedown', (e) => {
@@ -1092,8 +1173,89 @@
     document.addEventListener('scroll', hideContextMenu, true);
     window.addEventListener('resize', hideContextMenu);
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') hideContextMenu();
+      if (e.key === 'Escape') {
+        hideContextMenu();
+        closeConfirm();
+      }
     });
+  }
+
+  /* ==================== 屏蔽确认弹窗 ==================== */
+
+  function closeConfirm() {
+    if (confirmEl) confirmEl.classList.remove('xdeck-filter-confirm-open');
+  }
+
+  function openConfirm(user, onConfirm) {
+    if (!confirmEl) return;
+    confirmEl.textContent = '';
+
+    const box = document.createElement('div');
+    box.className = 'xdeck-filter-confirm-box';
+
+    const title = document.createElement('div');
+    title.className = 'xdeck-filter-confirm-title';
+    title.textContent = '确认屏蔽账号';
+
+    const userRow = document.createElement('div');
+    userRow.className = 'xdeck-filter-confirm-user';
+    if (user.avatar) {
+      const img = document.createElement('img');
+      img.className = 'xdeck-filter-confirm-avatar';
+      img.src = user.avatar;
+      img.alt = '';
+      img.referrerPolicy = 'no-referrer';
+      userRow.append(img);
+    }
+    const info = document.createElement('div');
+    info.className = 'xdeck-filter-confirm-info';
+    if (user.name) {
+      const nameEl = document.createElement('div');
+      nameEl.className = 'xdeck-filter-confirm-name';
+      nameEl.textContent = user.name;
+      info.append(nameEl);
+    }
+    const handleEl = document.createElement('div');
+    handleEl.className = 'xdeck-filter-confirm-handle';
+    handleEl.textContent = '@' + user.handle;
+    info.append(handleEl);
+    userRow.append(info);
+
+    const hint = document.createElement('div');
+    hint.className = 'xdeck-filter-confirm-hint';
+    hint.textContent = '屏蔽后该账号的所有内容都会被隐藏，确认是这个账号吗？';
+
+    const actions = document.createElement('div');
+    actions.className = 'xdeck-filter-confirm-actions';
+    const cancel = document.createElement('button');
+    cancel.className = 'xdeck-filter-confirm-cancel';
+    cancel.type = 'button';
+    cancel.textContent = '取消';
+    cancel.addEventListener('click', closeConfirm);
+    const ok = document.createElement('button');
+    ok.className = 'xdeck-filter-confirm-ok';
+    ok.type = 'button';
+    ok.textContent = '确认屏蔽';
+    ok.addEventListener('click', () => {
+      closeConfirm();
+      onConfirm();
+    });
+    actions.append(cancel, ok);
+
+    box.append(title, userRow, hint, actions);
+    confirmEl.append(box);
+    confirmEl.classList.add('xdeck-filter-confirm-open');
+  }
+
+  function injectConfirm() {
+    if (confirmEl || !document.body) return;
+
+    confirmEl = document.createElement('div');
+    confirmEl.className = 'xdeck-filter-confirm';
+    confirmEl.addEventListener('click', (e) => {
+      if (e.target === confirmEl) closeConfirm();
+    });
+    document.body.append(confirmEl);
   }
 
   function injectBadge() {
@@ -1147,7 +1309,7 @@
   /* ==================== 自动检查更新 ==================== */
 
   const SCRIPT_VERSION =
-    (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '0.6.0';
+    (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '0.6.1';
   const REPO_URL = 'https://github.com/bestony/bestony-userscripts';
   const UPDATE_URL = 'https://raw.githubusercontent.com/bestony/bestony-userscripts/main/xdeck-smart-filter.user.js';
   const UPDATE_CHECK_KEY = 'xdeck-filter-update-check';
@@ -1269,6 +1431,9 @@
     .xdeck-filter-panel-close { color: #8b98a5 !important; font-size: 18px; line-height: 1; }
     .xdeck-filter-panel-row { display: flex; gap: 8px; align-items: flex-start; }
     .xdeck-filter-key { display: flex; flex-direction: column; gap: 6px; }
+    .xdeck-filter-section { display: flex; flex-direction: column; gap: 6px; }
+    .xdeck-filter-section-body { display: none; flex-direction: column; gap: 6px; }
+    .xdeck-filter-section.xdeck-filter-section-open .xdeck-filter-section-body { display: flex; }
     .xdeck-filter-key-label {
       display: flex; align-items: baseline; justify-content: space-between;
       color: #8b98a5; font-size: 12px;
@@ -1332,6 +1497,31 @@
       color: #e7e9ea !important; font-size: 13px; text-decoration: none; white-space: nowrap;
     }
     .xdeck-filter-menu-item:hover { background: #1d9bf0; }
+    .xdeck-filter-confirm {
+      position: fixed; inset: 0; z-index: 100002;
+      display: none; align-items: center; justify-content: center;
+      background: rgba(0, 0, 0, .55);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    .xdeck-filter-confirm.xdeck-filter-confirm-open { display: flex; }
+    .xdeck-filter-confirm-box {
+      width: 270px; padding: 16px; border-radius: 12px;
+      background: #15202b; color: #e7e9ea; font-size: 13px;
+      box-shadow: 0 8px 28px rgba(0, 0, 0, .5);
+    }
+    .xdeck-filter-confirm-title { font-weight: 600; font-size: 14px; }
+    .xdeck-filter-confirm-user { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+    .xdeck-filter-confirm-avatar { width: 40px; height: 40px; border-radius: 50%; flex: none; object-fit: cover; }
+    .xdeck-filter-confirm-info { min-width: 0; }
+    .xdeck-filter-confirm-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .xdeck-filter-confirm-handle { color: #8b98a5; font-size: 12px; }
+    .xdeck-filter-confirm-hint { color: #8b98a5; font-size: 12px; line-height: 1.5; margin-top: 12px; }
+    .xdeck-filter-confirm-actions { display: flex; gap: 8px; margin-top: 16px; }
+    .xdeck-filter-confirm-actions button {
+      flex: 1; padding: 8px 10px; border-radius: 6px; border: none; cursor: pointer; font-size: 13px;
+    }
+    .xdeck-filter-confirm-cancel { background: #253341; color: #e7e9ea; }
+    .xdeck-filter-confirm-ok { background: #f4212e; color: #fff; }
     .xdeck-filter-update {
       position: fixed; top: 12px; left: 50%; z-index: 100001;
       display: flex; align-items: center; gap: 10px;
@@ -1364,6 +1554,7 @@
       injectBadge();
       injectPanel();
       injectContextMenu();
+      injectConfirm();
       scan();
     }, 150);
   });
@@ -1372,6 +1563,7 @@
   injectBadge();
   injectPanel();
   injectContextMenu();
+  injectConfirm();
   scan();
   checkUpdate();
   setInterval(scan, 3000); // 兜底：UI 虚拟滚动偶尔不触发 MutationObserver
